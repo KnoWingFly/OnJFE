@@ -13,7 +13,9 @@ const rootState = {
   modalStatus: {
     mode: 'login', // or 'register',
     visible: false
-  }
+  },
+  // Add anti-cheat state
+  antiCheatActive: false
 }
 
 const rootGetters = {
@@ -22,6 +24,10 @@ const rootGetters = {
   },
   'modalStatus' (state) {
     return state.modalStatus
+  },
+  // Add anti-cheat getter
+  'antiCheatActive' (state) {
+    return state.antiCheatActive
   }
 }
 
@@ -36,6 +42,10 @@ const rootMutations = {
     if (visible !== undefined) {
       state.modalStatus.visible = visible
     }
+  },
+  // Add anti-cheat mutation
+  [types.ANTI_CHEAT_ACTIVE] (state, payload) {
+    state.antiCheatActive = payload.active
   }
 }
 
