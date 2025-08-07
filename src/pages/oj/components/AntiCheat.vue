@@ -58,13 +58,18 @@
       </div>
     </Modal>
 
-    <!-- Cheat Detection Warning Modal -->
+    <!-- FIXED: Cheat Detection Warning Modal - Always show when triggered -->
     <Modal
       v-model="showWarningModal"
       :closable="false"
       :mask-closable="false"
       width="500"
       class-name="cheat-warning-modal"
+      :z-index="99999"
+      :append-to-body="true"
+      :transfer="false"
+      :lock-scroll="true"
+      :mask="true"
     >
       <div slot="header" style="color: #ed4014">
         <Icon type="alert" style="color: #ed4014"></Icon>
@@ -75,10 +80,13 @@
 
       <div class="warning-content">
         <p><strong>Violation:</strong> {{ lastViolation }}</p>
-        <p><strong>Total Violations:</strong> {{ violationCount }}</p>
+        <p>
+          <strong>Total Violations for this Problem:</strong>
+          {{ violationCount }}
+        </p>
         <p>
           <strong>Penalty:</strong> +10 minutes will be added to your next
-          correct submission
+          correct submission for this problem
         </p>
 
         <div class="violation-warning">
@@ -137,7 +145,6 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Add prop to receive problem status from parent
     problemStatus: {
       type: Number,
       default: null,
@@ -166,9 +173,28 @@ export default {
       modalCloseTimer: null,
       canCloseModal: false,
       modalCountdown: 15,
-      hasEnteredFullscreenBefore: false, // Add this new flag
-      problemViolationCount: 0, // Violations for current problem only
-      totalViolationCount: 0, // Total violations across all problems
+      hasEnteredFullscreenBefore: false,
+      problemViolationCount: 0,
+      totalViolationCount: 0,
+      isTransitioningToFullscreen: false,
+      fullscreenTransitionTimeout: null,
+
+      altKeyPressed: false,
+      altKeyStartTime: 0,
+      windowHasFocus: true,
+      windowBlurTime: 0,
+      mouseLeftWindow: false,
+      mouseLeaveTime: 0,
+      pageHiddenTime: 0,
+
+      // Track key combinations more precisely
+      pressedKeys: new Set(),
+      // NEW: Separate rule acceptance from monitoring
+      rulesAccepted: false,
+      shouldActivate: false,
+
+      // NEW: Force modal interval
+      forceModalUpdateInterval: null,
     };
   },
 
@@ -180,7 +206,6 @@ export default {
     });
 
     if (this.isActive && this.contestId && this.problemId) {
-      // Use nextTick to ensure DOM is ready
       this.$nextTick(() => {
         this.initializeAntiCheat();
       });
@@ -192,6 +217,7 @@ export default {
   },
 
   methods: {
+    // FIXED: Modified initialization
     async initializeAntiCheat() {
       console.log(
         `Initializing anti-cheat for contest ${this.contestId}, problem ${this.problemId}`
@@ -208,44 +234,25 @@ export default {
         return;
       }
 
-      // Convert problem ID to string to ensure consistency
       const problemIdStr = String(this.problemId);
-      console.log(
-        `Using problem ID: ${problemIdStr} (type: ${typeof problemIdStr})`
-      );
 
-      // Check problem-specific anti-cheat status
       try {
-        console.log(
-          `Checking anti-cheat status for contest ${this.contestId}, problem ${problemIdStr}`
-        );
-
         const statusRes = await api.checkProblemAntiCheatStatus(
           this.contestId,
           problemIdStr
         );
 
-        console.log("Anti-cheat status response:", statusRes);
-
         if (statusRes && statusRes.data && statusRes.data.data) {
           const data = statusRes.data.data;
-
-          // FIXED: Set ONLY problem-specific violation counts
           this.problemViolationCount = data.problem_violation_count || 0;
-          this.violationCount = this.problemViolationCount; // Only show THIS problem's violations
+          this.violationCount = this.problemViolationCount;
 
-          console.log(
-            `Problem ${problemIdStr} violation count: ${this.problemViolationCount}`
-          );
-
-          // Check if problem is already solved
           if (data.problem_solved) {
             console.log("Problem already solved, skipping anti-cheat");
             this.$emit("problem-solved");
             return;
           }
 
-          // Show current penalty status for THIS problem only
           if (this.problemViolationCount > 0) {
             this.$Message.info({
               content: `This problem has ${
@@ -256,74 +263,61 @@ export default {
               duration: 6,
             });
           }
-        } else {
-          console.warn(
-            "No valid anti-cheat status data received, using defaults"
-          );
-          this.problemViolationCount = 0;
-          this.violationCount = 0;
         }
       } catch (error) {
         console.error("Anti-cheat status check failed:", error);
-
-        // More specific error handling
-        if (error.isApiError) {
-          const errorMessage = error.message || "Unknown API error";
-          console.error(`API Error: ${errorMessage}`);
-
-          if (errorMessage.includes("Problem not found in this contest")) {
-            this.$Message.error({
-              content: `Problem ${problemIdStr} not found in contest ${this.contestId}. Please refresh the page.`,
-              duration: 8,
-            });
-            this.$emit("anti-cheat-declined");
-            return;
-          } else if (errorMessage.includes("Contest not found")) {
-            this.$Message.error({
-              content: `Contest ${this.contestId} not found. Please check the contest.`,
-              duration: 8,
-            });
-            this.$emit("anti-cheat-declined");
-            return;
-          }
-        }
-
-        // For other errors, use defaults but continue
-        console.warn("Using default values due to error:", error.message);
         this.problemViolationCount = 0;
         this.violationCount = 0;
       }
 
-      // Check if rules were already accepted for this specific problem
       const rulesKey = `contest_rules_${this.contestId}_${problemIdStr}`;
       const rulesAccepted = localStorage.getItem(rulesKey);
 
       if (!rulesAccepted) {
+        this.shouldActivate = true;
         this.showRulesModal = true;
       } else {
+        this.rulesAccepted = true;
+        this.shouldActivate = true;
+        this.notifyParentActivation();
         this.startMonitoring();
       }
     },
 
-    async loadViolationStatus() {
-      try {
-        const res = await api.checkAntiCheatStatus(this.contestId);
-
-        if (res && res.data && res.data.data) {
-          this.violationCount = res.data.data.violation_count || 0;
-          console.log(`Loaded violation count: ${this.violationCount}`);
-        } else {
-          console.warn("No valid violation status data, using default");
-          this.violationCount = 0;
-        }
-      } catch (error) {
-        console.warn("Failed to load violation status:", error);
-        // Set default violation count instead of failing
-        this.violationCount = 0;
+    // NEW: Method to notify parent about activation
+    notifyParentActivation() {
+      if (this.shouldActivate && this.rulesAccepted) {
+        this.$emit("anti-cheat-activated", true);
       }
     },
 
-    // Method to handle when problem is solved
+    // FIXED: Modified acceptRules
+    async acceptRules() {
+      this.acceptingRules = true;
+
+      try {
+        const rulesKey = `contest_rules_${this.contestId}_${this.problemId}`;
+        localStorage.setItem(rulesKey, "accepted");
+
+        this.rulesAccepted = true;
+        this.showRulesModal = false;
+        this.notifyParentActivation();
+
+        await this.enterFullscreen();
+        this.startMonitoring();
+      } finally {
+        this.acceptingRules = false;
+      }
+    },
+
+    // FIXED: Modified declineRules
+    declineRules() {
+      this.showRulesModal = false;
+      this.shouldActivate = false;
+      this.rulesAccepted = false;
+      this.$emit("anti-cheat-declined");
+    },
+
     onProblemSolved() {
       const rulesKey = `contest_rules_${this.contestId}_${this.problemId}`;
       const cooldownKey = `last_violation_${this.contestId}_${this.problemId}`;
@@ -342,29 +336,30 @@ export default {
       this.$emit("problem-solved");
     },
 
-    async acceptRules() {
-      this.acceptingRules = true;
+    startFocusMonitoring() {
+      this.focusCheckInterval = setInterval(() => {
+        if (!this.isMonitoring || this.problemSolved) return;
 
-      try {
-        const rulesKey = `contest_rules_${this.contestId}_${this.problemId}`;
-        localStorage.setItem(rulesKey, "accepted");
-        this.showRulesModal = false;
-
-        await this.enterFullscreen();
-        this.startMonitoring();
-      } finally {
-        this.acceptingRules = false;
-      }
+        // Check if document has focus
+        if (!document.hasFocus() && this.windowHasFocus) {
+          this.windowHasFocus = false;
+          this.recordViolation("Document lost focus (detected via polling)");
+        } else if (document.hasFocus() && !this.windowHasFocus) {
+          this.windowHasFocus = true;
+        }
+      }, 1000);
     },
 
-    declineRules() {
-      this.showRulesModal = false;
-      this.$emit("anti-cheat-declined");
+    stopFocusMonitoring() {
+      if (this.focusCheckInterval) {
+        clearInterval(this.focusCheckInterval);
+        this.focusCheckInterval = null;
+      }
     },
 
     async enterFullscreen() {
       try {
-        const elem = document.documentElement; // Check if already in fullscreen
+        const elem = document.documentElement;
 
         if (
           document.fullscreenElement ||
@@ -373,8 +368,16 @@ export default {
           document.mozFullScreenElement
         ) {
           this.isFullscreen = true;
-          return; // Already in fullscreen
+          return;
         }
+
+        this.isTransitioningToFullscreen = true;
+
+        if (this.fullscreenTransitionTimeout) {
+          clearTimeout(this.fullscreenTransitionTimeout);
+        }
+
+        console.log("Entering fullscreen - setting transition flag");
 
         if (elem.requestFullscreen) {
           await elem.requestFullscreen();
@@ -387,8 +390,21 @@ export default {
         } else {
           throw new Error("Fullscreen not supported");
         }
+
+        this.fullscreenTransitionTimeout = setTimeout(() => {
+          this.isTransitioningToFullscreen = false;
+          console.log(
+            "Fullscreen transition period ended - resize monitoring resumed"
+          );
+        }, 3000);
       } catch (error) {
-        console.warn("Fullscreen request failed:", error); // Only record violation if this is not the initial attempt
+        console.warn("Fullscreen request failed:", error);
+        this.isTransitioningToFullscreen = false;
+        if (this.fullscreenTransitionTimeout) {
+          clearTimeout(this.fullscreenTransitionTimeout);
+          this.fullscreenTransitionTimeout = null;
+        }
+
         if (this.hasEnteredFullscreenBefore) {
           this.recordViolation("Failed to enter fullscreen mode");
         }
@@ -401,12 +417,10 @@ export default {
       this.isMonitoring = true;
       this.setupEventListeners();
 
-      // Check fullscreen status periodically
       this.fullscreenCheckInterval = setInterval(() => {
         this.checkFullscreenStatus();
       }, 1000);
 
-      // Check for developer tools
       this.devToolsCheckInterval = setInterval(() => {
         this.checkDevTools();
       }, 2000);
@@ -414,8 +428,12 @@ export default {
       console.log("Anti-cheat monitoring started for problem:", this.problemId);
     },
 
+    stopMonitoring() {
+      this.isMonitoring = false;
+      this.cleanup();
+    },
+
     setupEventListeners() {
-      // Fullscreen change detection
       document.addEventListener(
         "fullscreenchange",
         this.handleFullscreenChange
@@ -433,29 +451,37 @@ export default {
         this.handleFullscreenChange
       );
 
-      // Tab visibility change
       document.addEventListener(
         "visibilitychange",
         this.handleVisibilityChange
       );
       this.visibilityListenerActive = true;
 
-      // Keyboard shortcuts detection
       document.addEventListener("keydown", this.handleKeyDown);
       this.keyboardListenerActive = true;
 
-      // Mouse events (for detecting clicks outside)
-      document.addEventListener("blur", this.handleWindowBlur);
-      document.addEventListener("focus", this.handleWindowFocus);
+      window.addEventListener("blur", this.handleWindowBlur);
+      window.addEventListener("focus", this.handleWindowFocus);
 
-      // Context menu (right-click) prevention
+      // Mouse leave detection (when cursor leaves window)
+      document.addEventListener("mouseleave", this.handleMouseLeave);
+      document.addEventListener("mouseenter", this.handleMouseEnter);
+
+      // Page visibility with enhanced detection
+      document.addEventListener(
+        "visibilitychange",
+        this.handleVisibilityChange
+      );
+
+      // Additional window state detection
+      window.addEventListener("beforeunload", this.handleBeforeUnload);
+      window.addEventListener("pagehide", this.handlePageHide);
+      window.addEventListener("pageshow", this.handlePageShow);
+
       document.addEventListener("contextmenu", this.handleContextMenu);
       this.contextMenuListenerActive = true;
 
-      // Window resize (potential dev tools detection)
       window.addEventListener("resize", this.handleWindowResize);
-
-      // Before unload detection
       window.addEventListener("beforeunload", this.handleBeforeUnload);
     },
 
@@ -465,34 +491,77 @@ export default {
         document.webkitFullscreenElement ||
         document.msFullscreenElement ||
         document.mozFullScreenElement
-      ); // Check for a violation: // - The component thought it was in fullscreen (this.isFullscreen). // - The browser reports it is NOT in fullscreen anymore (!isCurrentlyFullscreen). // - Monitoring is active and the problem is not solved. // - Crucially, the user has successfully entered fullscreen at least once before (this.hasEnteredFullscreenBefore).
+      );
+
+      console.log("Fullscreen change detected:", {
+        wasFullscreen: this.isFullscreen,
+        isNowFullscreen: isCurrentlyFullscreen,
+        hasEnteredBefore: this.hasEnteredFullscreenBefore,
+        isTransitioning: this.isTransitioningToFullscreen,
+        isMonitoring: this.isMonitoring,
+        problemSolved: this.problemSolved,
+      });
 
       if (
-        this.isFullscreen &&
-        !isCurrentlyFullscreen &&
+        this.isFullscreen === true &&
+        isCurrentlyFullscreen === false &&
+        this.hasEnteredFullscreenBefore &&
         this.isMonitoring &&
         !this.problemSolved &&
-        this.hasEnteredFullscreenBefore
+        !this.isTransitioningToFullscreen
       ) {
-        this.recordViolation("Exited fullscreen mode"); // Try to re-enter fullscreen after a short delay
+        console.log("Recording violation: User exited fullscreen");
+        this.recordViolation("Exited fullscreen mode");
 
         setTimeout(() => {
           if (!this.problemSolved) {
             this.enterFullscreen();
           }
         }, 100);
-      } // Update the component's state to match the browser's actual state
+      }
 
-      this.isFullscreen = isCurrentlyFullscreen; // Set the flag once we successfully enter fullscreen for the first time. // This ensures the initial entry does not cause a violation.
+      this.isFullscreen = isCurrentlyFullscreen;
 
       if (isCurrentlyFullscreen && !this.hasEnteredFullscreenBefore) {
         this.hasEnteredFullscreenBefore = true;
+        console.log(
+          "First successful fullscreen entry - flag set, no violation"
+        );
+      }
+
+      if (isCurrentlyFullscreen && this.isTransitioningToFullscreen) {
+        if (this.fullscreenTransitionTimeout) {
+          clearTimeout(this.fullscreenTransitionTimeout);
+        }
+
+        this.fullscreenTransitionTimeout = setTimeout(() => {
+          this.isTransitioningToFullscreen = false;
+          console.log(
+            "Fullscreen transition period ended after successful entry"
+          );
+        }, 2000);
       }
     },
 
     handleVisibilityChange() {
-      if (document.hidden && this.isMonitoring && !this.problemSolved) {
-        this.recordViolation("Switched to another tab/window");
+      if (!this.isMonitoring || this.problemSolved) return;
+
+      if (document.hidden) {
+        this.pageHiddenTime = Date.now();
+        this.recordViolation(
+          "Page became hidden (tab switch/minimize detected)"
+        );
+      } else {
+        // Page became visible again
+        if (this.pageHiddenTime) {
+          const hiddenDuration = Date.now() - this.pageHiddenTime;
+
+          if (hiddenDuration > 100) {
+            this.recordViolation(
+              `Page visible again after ${hiddenDuration}ms hidden`
+            );
+          }
+        }
       }
     },
 
@@ -500,23 +569,22 @@ export default {
       if (!this.isMonitoring || this.problemSolved) return;
 
       const forbiddenKeys = [
-        // Developer tools
         { key: "F12" },
-        { key: "I", ctrl: true, shift: true }, // Chrome DevTools
-        { key: "J", ctrl: true, shift: true }, // Chrome Console
-        { key: "C", ctrl: true, shift: true }, // Chrome Inspector
-        { key: "U", ctrl: true }, // View Source
-
-        // Tab switching
-        { key: "Tab", alt: true },
-
-        // Windows key
+        { key: "I", ctrl: true, shift: true },
+        { key: "J", ctrl: true, shift: true },
+        { key: "C", ctrl: true, shift: true },
+        { key: "U", ctrl: true },
+        { key: "Tab", alt: true }, // Alt+Tab
+        { key: "Tab", alt: true, shift: true }, // Alt+Shift+Tab (reverse tab switching)
+        { key: "Escape", alt: true }, // Alt+Escape (another way to switch)
+        { key: "Tab", meta: true }, // Cmd+Tab on Mac
         { key: "Meta" },
-
-        // Task manager / System shortcuts
         { key: "Delete", ctrl: true, alt: true },
-        { key: "Tab", ctrl: true },
-        { key: "Tab", ctrl: true, shift: true },
+        { key: "Tab", ctrl: true }, // Ctrl+Tab (browser tab switching)
+        { key: "Tab", ctrl: true, shift: true }, // Ctrl+Shift+Tab
+        { key: "t", ctrl: true }, // Ctrl+T (new tab)
+        { key: "w", ctrl: true }, // Ctrl+W (close tab)
+        { key: "n", ctrl: true }, // Ctrl+N (new window)
       ];
 
       for (let forbidden of forbiddenKeys) {
@@ -531,15 +599,108 @@ export default {
           return false;
         }
       }
+
+      this.pressedKeys.add(event.key);
+      this.pressedKeys.add(event.code);
+
+      // Check for Alt+Tab combinations with better detection
+      if (
+        this.pressedKeys.has("Alt") ||
+        this.pressedKeys.has("AltLeft") ||
+        this.pressedKeys.has("AltRight")
+      ) {
+        if (this.pressedKeys.has("Tab")) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.recordViolation(
+            "Alt+Tab combination detected (global state tracking)"
+          );
+          return false;
+        }
+      }
+
+      // Check for Ctrl+Tab (browser tab switching)
+      if (
+        (this.pressedKeys.has("Control") ||
+          this.pressedKeys.has("ControlLeft") ||
+          this.pressedKeys.has("ControlRight")) &&
+        this.pressedKeys.has("Tab")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.recordViolation("Ctrl+Tab browser tab switching detected");
+        return false;
+      }
+
+      // Check for Windows key + Tab (Task view)
+      if (
+        (this.pressedKeys.has("Meta") ||
+          this.pressedKeys.has("MetaLeft") ||
+          this.pressedKeys.has("MetaRight")) &&
+        this.pressedKeys.has("Tab")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.recordViolation("Windows+Tab task view detected");
+        return false;
+      }
+
+      // Additional detection for Alt key sequences
+      this.handleAltKeySequence(event);
+    },
+
+    handleKeyUp(event) {
+      // Remove key from pressed keys set
+      this.pressedKeys.delete(event.key);
+      this.pressedKeys.delete(event.code);
+    },
+
+    // Method 10: Additional page event handlers
+    handlePageHide(event) {
+      if (this.isMonitoring && !this.problemSolved) {
+        this.recordViolation(
+          "Page hide event detected (possible task switching)"
+        );
+      }
+    },
+
+    handleAltKeySequence(event) {
+      // Track Alt key press sequences
+      if (event.key === "Alt") {
+        this.altKeyPressed = true;
+        this.altKeyStartTime = Date.now();
+
+        // Set timeout to reset Alt key tracking
+        setTimeout(() => {
+          this.altKeyPressed = false;
+        }, 2000);
+      }
+
+      // If Alt is held and Tab is pressed
+      if (this.altKeyPressed && event.key === "Tab") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.recordViolation("Alt+Tab key sequence detected");
+        return false;
+      }
+
+      // If Alt is held and other navigation keys are pressed
+      if (this.altKeyPressed && ["Escape", "F4"].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.recordViolation(`Alt+${event.key} navigation detected`);
+        return false;
+      }
     },
 
     matchesKeyCombo(event, combo) {
-      return (
-        event.key === combo.key &&
-        !!event.ctrlKey === !!combo.ctrl &&
-        !!event.altKey === !!combo.alt &&
-        !!event.shiftKey === !!combo.shift
-      );
+      const keyMatch = event.key === combo.key || event.code === combo.key;
+      const ctrlMatch = !!event.ctrlKey === !!combo.ctrl;
+      const altMatch = !!event.altKey === !!combo.alt;
+      const shiftMatch = !!event.shiftKey === !!combo.shift;
+      const metaMatch = !!event.metaKey === !!combo.meta;
+
+      return keyMatch && ctrlMatch && altMatch && shiftMatch && metaMatch;
     },
 
     getKeyComboString(combo) {
@@ -552,16 +713,75 @@ export default {
     },
 
     handleWindowBlur() {
+      if (!this.isMonitoring || this.problemSolved) return;
+
+      this.windowBlurTime = Date.now();
+      this.windowHasFocus = false;
+
+      // Short delay to avoid false positives
+      setTimeout(() => {
+        if (!this.windowHasFocus && this.isMonitoring && !this.problemSolved) {
+          this.recordViolation("Window lost focus (possible Alt+Tab)");
+        }
+      }, 100);
+    },
+
+    handlePageShow(event) {
       if (this.isMonitoring && !this.problemSolved) {
-        this.recordViolation("Window lost focus");
+        // Ensure fullscreen when page shows again
+        setTimeout(() => {
+          if (!this.isFullscreen && !this.problemSolved) {
+            this.enterFullscreen();
+          }
+        }, 100);
       }
     },
 
     handleWindowFocus() {
-      // Window regained focus - check if we're still in fullscreen
-      if (this.isMonitoring && !this.isFullscreen && !this.problemSolved) {
+      if (!this.isMonitoring || this.problemSolved) return;
+
+      this.windowHasFocus = true;
+
+      // Calculate blur duration
+      if (this.windowBlurTime) {
+        const blurDuration = Date.now() - this.windowBlurTime;
+
+        // If blur was very short, likely Alt+Tab
+        if (blurDuration > 100 && blurDuration < 5000) {
+          this.recordViolation(
+            `Window regained focus after ${blurDuration}ms (Alt+Tab pattern)`
+          );
+        }
+      }
+
+      // Ensure fullscreen when focus returns
+      if (!this.isFullscreen && !this.problemSolved) {
         this.enterFullscreen();
       }
+    },
+
+    handleMouseLeave() {
+      if (!this.isMonitoring || this.problemSolved) return;
+
+      this.mouseLeftWindow = true;
+      this.mouseLeaveTime = Date.now();
+    },
+
+    handleMouseEnter() {
+      if (!this.isMonitoring || this.problemSolved) return;
+
+      if (this.mouseLeftWindow && this.mouseLeaveTime) {
+        const awayDuration = Date.now() - this.mouseLeaveTime;
+
+        // If mouse was away for a suspicious amount of time
+        if (awayDuration > 500 && awayDuration < 10000) {
+          this.recordViolation(
+            `Mouse activity pattern suggests window switching (${awayDuration}ms)`
+          );
+        }
+      }
+
+      this.mouseLeftWindow = false;
     },
 
     handleContextMenu(event) {
@@ -573,15 +793,26 @@ export default {
     },
 
     handleWindowResize() {
-      // Detect potential developer tools opening
+      if (this.isTransitioningToFullscreen) {
+        console.log("Ignoring window resize during fullscreen transition");
+        this.lastWindowHeight = window.innerHeight;
+        this.lastWindowWidth = window.innerWidth;
+        return;
+      }
+
       const heightDiff = Math.abs(window.innerHeight - this.lastWindowHeight);
       const widthDiff = Math.abs(window.innerWidth - this.lastWindowWidth);
 
       if (
         (heightDiff > 100 || widthDiff > 100) &&
         this.isMonitoring &&
-        !this.problemSolved
+        !this.problemSolved &&
+        this.isFullscreen &&
+        this.hasEnteredFullscreenBefore
       ) {
+        console.log(
+          "Recording violation: Significant resize in fullscreen mode"
+        );
         this.recordViolation(
           "Significant window resize detected (possible dev tools)"
         );
@@ -621,7 +852,6 @@ export default {
     checkDevTools() {
       if (this.problemSolved) return;
 
-      // Method 1: Check for console.log performance
       const startTime = performance.now();
       console.log("%c", "color: transparent;");
       const endTime = performance.now();
@@ -635,7 +865,6 @@ export default {
         this.devToolsOpen = false;
       }
 
-      // Method 2: Check window size vs screen size
       const threshold = 160;
       if (
         window.outerHeight - window.innerHeight > threshold ||
@@ -650,6 +879,7 @@ export default {
       }
     },
 
+    // FIXED: Enhanced recordViolation with better logging
     recordViolation(violationType) {
       if (this.problemSolved) {
         console.log(
@@ -660,13 +890,10 @@ export default {
       }
 
       console.log(
-        `Recording violation for problem ${this.problemId}: ${violationType}`
+        `🚨 RECORDING VIOLATION for problem ${this.problemId}: ${violationType}`
       );
 
-      // Convert problem ID to string for consistency
       const problemIdStr = String(this.problemId);
-
-      // Check cooldown for this specific problem and violation type
       const cooldownKey = `last_violation_${this.contestId}_${problemIdStr}_${violationType}`;
       const lastViolationTime = localStorage.getItem(cooldownKey);
       const now = Date.now();
@@ -678,12 +905,14 @@ export default {
         return;
       }
 
-      // Update problem-specific violation count (not total)
       this.problemViolationCount++;
-      this.violationCount = this.problemViolationCount; // Display problem-specific count only
+      this.violationCount = this.problemViolationCount;
       this.lastViolation = violationType;
 
-      // Send to backend
+      console.log(`📊 Updated violation count: ${this.violationCount}`);
+      console.log(`⏰ About to show warning modal...`);
+
+      // FIXED: Ensure violation modal shows
       this.sendViolationToBackend(violationType);
       this.showWarningModalWithTimer();
 
@@ -692,26 +921,167 @@ export default {
       );
     },
 
+    // FIXED: Enhanced showWarningModalWithTimer with forced modal display
     showWarningModalWithTimer() {
-      this.showWarningModal = true;
-      this.canCloseModal = false;
-      this.modalCountdown = 15;
+      console.log(
+        `🔔 Showing warning modal for violation: ${this.lastViolation}`
+      );
+      console.log(
+        `📋 Modal state before: showWarningModal=${this.showWarningModal}`
+      );
 
-      // Clear any existing timer
+      // Force close any existing modal first
+      this.showWarningModal = false;
+
+      // Use nextTick to ensure DOM updates, then show modal
+      this.$nextTick(() => {
+        this.showWarningModal = true;
+        this.canCloseModal = false;
+        this.modalCountdown = 15;
+
+        console.log(
+          `📋 Modal state after nextTick: showWarningModal=${this.showWarningModal}`
+        );
+
+        // Force DOM update and check if modal is actually visible
+        this.$nextTick(() => {
+          const modalElements = document.querySelectorAll(
+            ".cheat-warning-modal"
+          );
+          console.log(`🔍 Found ${modalElements.length} modal elements in DOM`);
+
+          modalElements.forEach((element, index) => {
+            console.log(
+              `📋 Modal ${index} display style:`,
+              window.getComputedStyle(element).display
+            );
+            console.log(
+              `📋 Modal ${index} visibility:`,
+              window.getComputedStyle(element).visibility
+            );
+            console.log(
+              `📋 Modal ${index} z-index:`,
+              window.getComputedStyle(element).zIndex
+            );
+          });
+
+          // If modal isn't visible, try to force it
+          if (
+            modalElements.length === 0 ||
+            window.getComputedStyle(modalElements[0]).display === "none"
+          ) {
+            console.log(`⚠️ Modal not visible, forcing display...`);
+            this.forceShowModal();
+          }
+        });
+      });
+
       if (this.modalCloseTimer) {
         clearInterval(this.modalCloseTimer);
       }
 
-      // Start countdown timer
       this.modalCloseTimer = setInterval(() => {
         this.modalCountdown--;
+        console.log(`⏳ Modal countdown: ${this.modalCountdown}`);
 
         if (this.modalCountdown <= 0) {
           this.canCloseModal = true;
           clearInterval(this.modalCloseTimer);
           this.modalCloseTimer = null;
+          console.log(`✅ Modal can now be closed`);
         }
       }, 1000);
+    },
+
+    // NEW: Force modal to show with direct DOM manipulation if needed
+    forceShowModal() {
+      console.log(`🔧 Force showing modal with enhanced DOM manipulation`);
+
+      // Remove any existing force modal
+      const existingForceModal = document.getElementById(
+        "force-violation-modal"
+      );
+      if (existingForceModal) {
+        existingForceModal.remove();
+      }
+
+      const modalHTML = `
+    <div id="force-violation-modal" style="
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      background: rgba(0, 0, 0, 0.8) !important;
+      z-index: 100001 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      pointer-events: all !important;
+    ">
+      <div style="
+        background: white !important;
+        padding: 30px !important;
+        border-radius: 8px !important;
+        max-width: 500px !important;
+        width: 90% !important;
+        box-shadow: 0 8px 40px rgba(0,0,0,0.5) !important;
+        position: relative !important;
+        z-index: 100002 !important;
+      ">
+        <!-- Your existing modal content with enhanced styles -->
+      </div>
+    </div>
+  `;
+
+      // Append to body instead of current element
+      document.body.insertAdjacentHTML("beforeend", modalHTML);
+
+      // Set up countdown for forced modal
+      const updateForceModal = () => {
+        const countdownElement = document.getElementById("countdown-number");
+        const progressBar = document.getElementById("countdown-bar");
+        const button = document.getElementById("force-acknowledge-btn");
+
+        if (countdownElement) {
+          countdownElement.textContent = this.modalCountdown;
+        }
+
+        if (progressBar) {
+          progressBar.style.width = `${
+            ((15 - this.modalCountdown) / 15) * 100
+          }%`;
+        }
+
+        if (button) {
+          if (this.canCloseModal) {
+            button.disabled = false;
+            button.style.opacity = "1";
+            button.textContent = "I Understand";
+            button.onclick = () => {
+              const forceModal = document.getElementById(
+                "force-violation-modal"
+              );
+              if (forceModal) {
+                forceModal.remove();
+              }
+              this.acknowledgeWarning();
+            };
+          } else {
+            button.disabled = true;
+            button.style.opacity = "0.6";
+            button.textContent = `Wait ${this.modalCountdown}s`;
+          }
+        }
+      };
+
+      // Update the forced modal immediately
+      updateForceModal();
+
+      // Set up interval to update forced modal
+      this.forceModalUpdateInterval = setInterval(updateForceModal, 1000);
+
+      console.log(`✅ Force modal created and displayed`);
     },
 
     async sendViolationToBackend(violationType) {
@@ -724,12 +1094,11 @@ export default {
       this.pendingViolations.add(violationKey);
 
       try {
-        // FIXED: Ensure problem ID is properly converted to string
         const problemIdStr = String(this.problemId);
 
         const violationData = {
           contest_id: String(this.contestId),
-          problem_id: problemIdStr, // Always include for problem-specific tracking
+          problem_id: problemIdStr,
           violation_type: this.mapViolationType(violationType),
           violation_details: String(violationType),
           timestamp: new Date().toISOString(),
@@ -742,13 +1111,11 @@ export default {
         if (response && response.data) {
           const responseData = response.data.data || {};
 
-          // FIXED: Update only THIS problem's violation count
           if (responseData.problem_violation_count !== undefined) {
             this.problemViolationCount = responseData.problem_violation_count;
-            this.violationCount = this.problemViolationCount; // Only show this problem's count
+            this.violationCount = this.problemViolationCount;
           }
 
-          // Store cooldown timestamp for this specific problem
           const cooldownKey = `last_violation_${this.contestId}_${problemIdStr}_${violationType}`;
           localStorage.setItem(cooldownKey, Date.now().toString());
 
@@ -758,7 +1125,6 @@ export default {
             }, Penalty: ${this.problemViolationCount * 10} minutes`
           );
 
-          // Emit to parent component with problem-specific data
           this.$emit("violation-recorded", {
             count: this.problemViolationCount,
             penalty: this.problemViolationCount * 10,
@@ -769,7 +1135,6 @@ export default {
       } catch (error) {
         console.error("Failed to send violation to backend:", error);
 
-        // Show user-friendly error message
         if (error.isApiError && error.message.includes("Problem not found")) {
           this.$Message.error({
             content: `Problem ${this.problemId} not found in contest. Stopping anti-cheat monitoring.`,
@@ -804,12 +1169,16 @@ export default {
           return typeMap[key];
         }
       }
-      return "other"; // default fallback
+      return "other";
     },
 
+    // FIXED: Enhanced acknowledgeWarning with force modal cleanup
     acknowledgeWarning() {
+      console.log(
+        `🔄 User attempting to acknowledge warning. Can close: ${this.canCloseModal}`
+      );
+
       if (!this.canCloseModal) {
-        // Prevent closing if countdown hasn't finished
         this.$Message.warning({
           content: `Please wait ${this.modalCountdown} seconds before continuing`,
           duration: 2,
@@ -817,27 +1186,32 @@ export default {
         return;
       }
 
+      console.log(`✅ Closing warning modal`);
+
+      // Clean up force modal if it exists
+      const forceModal = document.getElementById("force-violation-modal");
+      if (forceModal) {
+        forceModal.remove();
+      }
+
+      if (this.forceModalUpdateInterval) {
+        clearInterval(this.forceModalUpdateInterval);
+        this.forceModalUpdateInterval = null;
+      }
+
       this.showWarningModal = false;
 
-      // Clear timer if it exists
       if (this.modalCloseTimer) {
         clearInterval(this.modalCloseTimer);
         this.modalCloseTimer = null;
       }
 
-      // Try to re-enter fullscreen if not already
       if (!this.isFullscreen && !this.problemSolved) {
         this.enterFullscreen();
       }
     },
 
-    stopMonitoring() {
-      this.isMonitoring = false;
-      this.cleanup();
-    },
-
     cleanup() {
-      // Clear intervals
       if (this.fullscreenCheckInterval) {
         clearInterval(this.fullscreenCheckInterval);
       }
@@ -849,7 +1223,22 @@ export default {
         this.modalCloseTimer = null;
       }
 
-      // Remove event listeners
+      // FIXED: Clean up force modal
+      if (this.forceModalUpdateInterval) {
+        clearInterval(this.forceModalUpdateInterval);
+        this.forceModalUpdateInterval = null;
+      }
+
+      const forceModal = document.getElementById("force-violation-modal");
+      if (forceModal) {
+        forceModal.remove();
+      }
+
+      if (this.fullscreenTransitionTimeout) {
+        clearTimeout(this.fullscreenTransitionTimeout);
+        this.fullscreenTransitionTimeout = null;
+      }
+
       document.removeEventListener(
         "fullscreenchange",
         this.handleFullscreenChange
@@ -886,8 +1275,12 @@ export default {
       document.removeEventListener("focus", this.handleWindowFocus);
       window.removeEventListener("resize", this.handleWindowResize);
       window.removeEventListener("beforeunload", this.handleBeforeUnload);
+      document.removeEventListener("mouseleave", this.handleMouseLeave);
+      document.removeEventListener("mouseenter", this.handleMouseEnter);
+      document.removeEventListener("pagehide", this.handlePageHide);
+      document.removeEventListener("pageshow", this.handlePageShow);
+      document.removeEventListener("keyup", this.handleKeyUp);
 
-      // Exit fullscreen if we're still in it
       if (this.isFullscreen) {
         try {
           if (document.exitFullscreen) {
@@ -904,9 +1297,18 @@ export default {
         }
       }
 
-      // Clear pending violations and reset flags
+      // FIXED: Emit deactivation and reset flags
+      this.$emit("anti-cheat-activated", false);
+
       this.pendingViolations.clear();
-      this.hasEnteredFullscreenBefore = false; // Reset the flag
+      this.hasEnteredFullscreenBefore = false;
+      this.isTransitioningToFullscreen = false;
+      this.rulesAccepted = false;
+      this.shouldActivate = false;
+      this.altKeyPressed = false;
+      this.windowHasFocus = true;
+      this.mouseLeftWindow = false;
+      this.pressedKeys.clear();
 
       console.log("Anti-cheat monitoring stopped");
     },
@@ -958,7 +1360,6 @@ export default {
       immediate: true,
     },
 
-    // Watch for problem status changes from parent
     problemStatus: {
       handler(newStatus) {
         if (newStatus === 0) {
@@ -977,6 +1378,29 @@ export default {
 <style lang="less" scoped>
 .anti-cheat-modal,
 .cheat-warning-modal {
+  // FIXED: Ensure maximum z-index for violation modal
+  &.cheat-warning-modal {
+    z-index: 99999 !important;
+
+    /deep/ .ivu-modal {
+      z-index: 99999 !important;
+    }
+
+    /deep/ .ivu-modal-mask {
+      z-index: 99998 !important;
+      background: rgba(0, 0, 0, 0.8) !important; // Darker background
+    }
+
+    /deep/ .ivu-modal-wrap {
+      z-index: 99999 !important;
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+    }
+  }
+
   .rules-content {
     padding: 20px 0;
 
@@ -1020,6 +1444,19 @@ export default {
         margin-left: 8px;
         color: #2d8cf0;
       }
+    }
+  }
+
+  :global(.cheat-warning-modal) {
+    z-index: 99999 !important;
+
+    .ivu-modal {
+      z-index: 99999 !important;
+    }
+
+    .ivu-modal-mask {
+      z-index: 99998 !important;
+      background: rgba(0, 0, 0, 0.8) !important;
     }
   }
 

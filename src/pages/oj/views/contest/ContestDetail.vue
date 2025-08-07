@@ -1,5 +1,5 @@
 <template>
-  <div class="flex-container">
+  <div class="flex-container" :class="{ 'anti-cheat-active': antiCheatActive }">
     <div id="contest-main">
       <!--children-->
       <transition name="fadeInUp">
@@ -13,7 +13,7 @@
               <div slot="title">
                 {{contest.title}}
               </div>
-              <div slot="extra">
+              <div slot="extra" v-show="!antiCheatActive">
                 <Tag type="dot" :color="countdownColor">
                   <span id="countdown">{{countdown}}</span>
                 </Tag>
@@ -26,13 +26,14 @@
                 <Button type="info" @click="checkPassword">Enter</Button>
               </div>
             </Panel>
-            <Table :columns="columns" :data="contest_table" disabled-hover style="margin-bottom: 40px;"></Table>
+            <Table :columns="columns" :data="contest_table" disabled-hover style="margin-bottom: 40px;" v-show="!antiCheatActive"></Table>
           </div>
         </template>
       </div>
-
     </div>
-    <div v-show="showMenu" id="contest-menu">
+    
+    <!-- Hide contest menu when anti-cheat is active -->
+    <div v-show="showMenu && !antiCheatActive" id="contest-menu">
       <VerticalMenu @on-click="handleRoute">
         <VerticalMenu-item :route="{name: 'contest-details', params: {contestID: contestID}}">
           <Icon type="home"></Icon>
@@ -170,7 +171,7 @@
       }),
       ...mapGetters(
         ['contestMenuDisabled', 'contestRuleType', 'contestStatus', 'countdown', 'isContestAdmin',
-          'OIContestRealTimePermission', 'passwordFormVisible']
+          'OIContestRealTimePermission', 'passwordFormVisible', 'antiCheatActive']
       ),
       countdownColor () {
         if (this.contestStatus) {
@@ -223,6 +224,17 @@
       &-input {
         width: 200px;
         margin-right: 10px;
+      }
+    }
+
+    // Anti-cheat mode styles
+    &.anti-cheat-active {
+      #contest-main {
+        width: 100% !important;
+        max-width: none !important;
+      }
+      #contest-menu {
+        display: none !important;
       }
     }
   }

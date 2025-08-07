@@ -1,22 +1,19 @@
 <template>
-  <div class="flex-container">
+  <div class="flex-container" :class="{ 'anti-cheat-mode': antiCheatActive }">
     <!-- Anti-Cheat Component -->
     <AntiCheat
-      v-if="antiCheatActive"
+      v-if="shouldShowAntiCheat"
       ref="antiCheat"
       :contest-id="contestID"
       :problem-id="problem._id"
-      :is-active="antiCheatActive"
+      :is-active="shouldShowAntiCheat"
       :problem-status="problem.my_status"
       @anti-cheat-declined="handleAntiCheatDeclined"
+      @anti-cheat-activated="handleAntiCheatActivated"
       @violation-recorded="handleViolationRecorded"
-      @problem-solved="
-        () => {
-          this.antiCheatActive = false;
-        }
-      "
+      @problem-solved="handleProblemSolved"
     />
-    <div id="problem-main">
+    <div id="problem-main" :class="{ fullwidth: antiCheatActive }">
       <!--problem main-->
       <Panel :padding="40" shadow>
         <div slot="title">{{ problem.title }}</div>
@@ -165,7 +162,7 @@
       </Card>
     </div>
 
-    <div id="right-column">
+    <div id="right-column" v-show="!antiCheatActive">
       <VerticalMenu @on-click="handleRoute">
         <template v-if="this.contestID">
           <VerticalMenu-item
@@ -341,6 +338,8 @@ export default {
       theme: "solarized",
       submissionId: "",
       submitted: false,
+      shouldShowAntiCheat: false, // CHANGED: Use different name
+      antiCheatActive: false, // CHANGED: This now tracks UI state
 
       // Anti-cheat related data
       antiCheatActive: false,
@@ -445,6 +444,22 @@ export default {
         this.$Loading.error();
         console.error("Failed to load problem:", error);
       }
+    },
+
+    handleAntiCheatActivated(isActive) {
+      console.log("Anti-cheat activation state changed:", isActive);
+      this.antiCheatActive = isActive;
+
+      // Update store state for navbar/sidebar hiding
+      this.$store.commit("ANTI_CHEAT_ACTIVE", { active: isActive });
+    },
+
+    handleProblemSolved() {
+      this.problem.my_status = 0;
+      this.shouldShowAntiCheat = false;
+      this.antiCheatActive = false;
+      this.$store.commit("ANTI_CHEAT_ACTIVE", { active: false });
+      this.storeProblemSolvedStatus();
     },
 
     handleViolationRecorded(violationData) {
@@ -750,40 +765,42 @@ export default {
     },
 
     checkAntiCheatRequirement() {
-      // Add guard clause to prevent unnecessary calls
       if (!this.contestID) {
         console.log("No contest ID - anti-cheat disabled");
+        this.shouldShowAntiCheat = false;
         this.antiCheatActive = false;
         return;
       }
 
-      // Check if problem data is loaded
       if (!this.problem || !this.problem._id) {
         console.log("Problem data not loaded yet - skipping anti-cheat check");
         return;
       }
 
-      // Check if problem is already solved (my_status === 0 means solved)
       if (this.problem.my_status === 0) {
         console.log(
           `Problem ${this.problemID} already solved - anti-cheat disabled`
         );
+        this.shouldShowAntiCheat = false;
         this.antiCheatActive = false;
         return;
       }
 
-      // Check localStorage for solved status as backup
       if (this.isProblemSolved()) {
         console.log(
           `Problem ${this.problemID} marked as solved in localStorage - anti-cheat disabled`
         );
+        this.shouldShowAntiCheat = false;
         this.antiCheatActive = false;
         return;
       }
 
-      // Only activate if all conditions are met
-      console.log(`Anti-cheat activated for problem ${this.problemID}`);
-      this.antiCheatActive = true;
+      // Only show the anti-cheat component, don't activate UI changes yet
+      console.log(
+        `Anti-cheat component will be shown for problem ${this.problemID}`
+      );
+      this.shouldShowAntiCheat = true;
+      // antiCheatActive stays false until user accepts rules
     },
 
     handleAntiCheatDeclined() {
@@ -848,24 +865,15 @@ export default {
     next();
   },
   watch: {
-    $route() {
-      // Reset anti-cheat state when route changes
-      this.antiCheatActive = false;
-      this.problemSolved = false;
-      this.violationCount = 0;
-      this.init();
-    },
-
     "problem.my_status"(newStatus, oldStatus) {
       console.log(`Problem status changed from ${oldStatus} to ${newStatus}`);
 
-      // Only react to meaningful status changes
       if (newStatus === oldStatus) return;
 
       if (newStatus === 0) {
-        // Problem is now solved
-        this.problemSolved = true;
+        this.shouldShowAntiCheat = false;
         this.antiCheatActive = false;
+        this.$store.commit("ANTI_CHEAT_ACTIVE", { active: false });
         this.storeProblemSolvedStatus();
         console.log("Problem solved - anti-cheat disabled");
       } else if (
@@ -873,24 +881,39 @@ export default {
         newStatus !== null &&
         newStatus !== undefined
       ) {
-        // Problem is not solved, recheck anti-cheat requirement
         this.checkAntiCheatRequirement();
       }
     },
 
-    // Remove the problematic problem watcher or fix it
-    problem: {
-      handler(newProblem, oldProblem) {
-        // Only trigger if we actually switched problems
-        if (newProblem && oldProblem && newProblem._id !== oldProblem._id) {
-          console.log(
-            `Switched from problem ${oldProblem._id} to ${newProblem._id}`
-          );
-          this.checkAntiCheatRequirement();
-        }
-      },
-      deep: false, // Don't watch deeply to avoid unnecessary triggers
+    // Update route watcher
+    $route() {
+      this.shouldShowAntiCheat = false;
+      this.antiCheatActive = false;
+      this.$store.commit("ANTI_CHEAT_ACTIVE", { active: false });
+      this.problemSolved = false;
+      this.violationCount = 0;
+      this.init();
     },
+  },
+
+  // Update beforeRouteLeave
+  beforeRouteLeave(to, from, next) {
+    clearInterval(this.refreshStatus);
+    this.$store.commit(types.CHANGE_CONTEST_ITEM_VISIBLE, { menu: true });
+    storage.set(buildProblemCodeKey(this.problem._id, from.params.contestID), {
+      code: this.code,
+      language: this.language,
+      theme: this.theme,
+    });
+
+    // Clean up anti-cheat
+    if (this.shouldShowAntiCheat) {
+      this.shouldShowAntiCheat = false;
+      this.antiCheatActive = false;
+      this.$store.commit("ANTI_CHEAT_ACTIVE", { active: false });
+    }
+
+    next();
   },
 };
 </script>
@@ -925,14 +948,30 @@ export default {
 }
 
 .flex-container {
-  #problem-main {
-    flex: auto;
-    margin-right: 18px;
+  &.anti-cheat-mode {
+    #problem-main {
+      margin-right: 0 !important;
+
+      &.fullwidth {
+        width: 100% !important;
+        max-width: none !important;
+      }
+    }
+
+    #right-column {
+      display: none !important;
+    }
   }
-  #right-column {
-    flex: none;
-    width: 220px;
-  }
+}
+
+#problem-main {
+  flex: auto;
+  margin-right: 18px;
+}
+
+#right-column {
+  flex: none;
+  width: 220px;
 }
 
 #problem-content {
