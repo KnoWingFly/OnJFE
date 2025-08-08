@@ -124,6 +124,32 @@
         </Button>
       </div>
     </Modal>
+
+    <Modal
+      v-model="showTimeLimitModal"
+      :closable="false"
+      :mask-closable="false"
+      width="450"
+      class-name="time-limit-modal"
+      :z-index="100000"
+      :append-to-body="true"
+      :transfer="false"
+    >
+      <div slot="header">
+        <Icon type="ios-time-outline"></Icon>
+        <span>Session Time Limit</span>
+      </div>
+      <div class="time-limit-content">
+        <p>Your session has expired.</p>
+        <p>Would you like to continue or leave the problem?</p>
+      </div>
+      <div slot="footer">
+        <Button @click="leaveSession" type="text">Leave Now</Button>
+        <Button type="primary" @click="extendSession"
+          >Continue (Add 30 mins)</Button
+        >
+      </div>
+    </Modal>
   </div>
 </template>
 
@@ -148,6 +174,10 @@ export default {
     problemStatus: {
       type: Number,
       default: null,
+    },
+    sessionDuration: {
+      type: Number,
+      default: 1800, // Default to 30 minutes (1800s) if not provided
     },
   },
 
@@ -195,6 +225,10 @@ export default {
 
       // NEW: Force modal interval
       forceModalUpdateInterval: null,
+      sessionTimer: null,
+      timeRemaining: this.sessionDuration, // Use the prop for the initial value
+      showTimeLimitModal: false,
+      isLeaving: false,
     };
   },
 
@@ -416,6 +450,7 @@ export default {
 
       this.isMonitoring = true;
       this.setupEventListeners();
+      this.startSessionTimer();
 
       this.fullscreenCheckInterval = setInterval(() => {
         this.checkFullscreenStatus();
@@ -823,11 +858,9 @@ export default {
     },
 
     handleBeforeUnload(event) {
-      if (this.isMonitoring && !this.problemSolved) {
+      if (this.isMonitoring && !this.problemSolved && !this.isLeaving) {
+        // We still record the violation silently in the background.
         this.recordViolation("Attempted to leave the page");
-        event.preventDefault();
-        event.returnValue =
-          "Are you sure you want to leave? This will be recorded as a violation.";
       }
     },
 
@@ -879,6 +912,38 @@ export default {
       }
     },
 
+    startSessionTimer() {
+      if (this.sessionTimer) clearInterval(this.sessionTimer);
+      this.sessionTimer = setInterval(() => {
+        this.timeRemaining--;
+        this.$emit("time-update", this.timeRemaining); // Notify parent of time change
+
+        if (this.timeRemaining <= 0) {
+          clearInterval(this.sessionTimer);
+          this.sessionTimer = null;
+          this.showTimeLimitModal = true;
+        }
+      }, 1000);
+    },
+
+    stopSessionTimer() {
+      if (this.sessionTimer) {
+        clearInterval(this.sessionTimer);
+        this.sessionTimer = null;
+      }
+    },
+
+    extendSession() {
+      this.showTimeLimitModal = false;
+      this.timeRemaining = this.sessionDuration;
+      this.startSessionTimer();
+    },
+
+    leaveSession() {
+      this.isLeaving = true; // Set flag to prevent violation
+      this.stopSessionTimer();
+      this.$emit("leave-contest"); // Ask parent to handle navigation
+    },
     // FIXED: Enhanced recordViolation with better logging
     recordViolation(violationType) {
       if (this.problemSolved) {
@@ -1377,7 +1442,8 @@ export default {
 
 <style lang="less" scoped>
 .anti-cheat-modal,
-.cheat-warning-modal {
+.cheat-warning-modal,
+.time-limit-modal {
   // FIXED: Ensure maximum z-index for violation modal
   &.cheat-warning-modal {
     z-index: 99999 !important;

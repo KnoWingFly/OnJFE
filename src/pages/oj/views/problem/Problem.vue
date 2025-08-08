@@ -1,5 +1,9 @@
 <template>
   <div class="flex-container" :class="{ 'anti-cheat-mode': antiCheatActive }">
+    <div v-if="antiCheatActive && formattedTime" class="anti-cheat-timer">
+      <Icon type="ios-timer-outline"></Icon>
+      Time Remaining: <strong>{{ formattedTime }}</strong>
+    </div>
     <!-- Anti-Cheat Component -->
     <AntiCheat
       v-if="shouldShowAntiCheat"
@@ -8,10 +12,13 @@
       :problem-id="problem._id"
       :is-active="shouldShowAntiCheat"
       :problem-status="problem.my_status"
+      :session-duration="sessionDuration"
       @anti-cheat-declined="handleAntiCheatDeclined"
       @anti-cheat-activated="handleAntiCheatActivated"
       @violation-recorded="handleViolationRecorded"
       @problem-solved="handleProblemSolved"
+      @time-update="updateTimerDisplay"
+      @leave-contest="handleLeaveContest"
     />
     <div id="problem-main" :class="{ fullwidth: antiCheatActive }">
       <!--problem main-->
@@ -345,6 +352,10 @@ export default {
       antiCheatActive: false,
       antiCheatViolations: 0,
       problemSolved: false,
+      antiCheatTimeRemaining: null,
+
+      sessionDuration: 60, // 5 minutes (5 * 60). Change this value as needed.
+      antiCheatTimeRemaining: null,
 
       result: {
         result: 9,
@@ -474,6 +485,17 @@ export default {
       this.$Message.warning(
         "You must accept the anti-cheat rules to participate in the contest"
       );
+      this.$router.push({
+        name: "contest-problem-list",
+        params: { contestID: this.contestID },
+      });
+    },
+
+    updateTimerDisplay(timeInSeconds) {
+      this.antiCheatTimeRemaining = timeInSeconds;
+    },
+
+    handleLeaveContest() {
       this.$router.push({
         name: "contest-problem-list",
         params: { contestID: this.contestID },
@@ -846,6 +868,20 @@ export default {
         };
       }
     },
+    formattedTime() {
+      if (
+        this.antiCheatTimeRemaining === null ||
+        this.antiCheatTimeRemaining < 0
+      ) {
+        return null;
+      }
+      const minutes = Math.floor(this.antiCheatTimeRemaining / 60);
+      const seconds = this.antiCheatTimeRemaining % 60;
+      return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(
+        2,
+        "0"
+      )}`;
+    },
   },
   beforeRouteLeave(to, from, next) {
     // Existing code...
@@ -1070,5 +1106,25 @@ export default {
   margin-top: 20px;
   width: 500px;
   height: 480px;
+}
+
+.anti-cheat-timer {
+  position: fixed;
+  top: 15px;
+  right: 25px;
+  background-color: rgba(255, 255, 255, 0.9);
+  border: 1px solid #dcdcdc;
+  padding: 8px 15px;
+  border-radius: 20px;
+  z-index: 1001; /* Must be higher than other elements on the page */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+
+  .ivu-icon {
+    font-size: 18px;
+    margin-right: 8px;
+  }
 }
 </style>
