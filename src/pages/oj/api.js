@@ -403,6 +403,56 @@ export default {
           }
         }
       })
+  },
+  submitContestReview (data) {
+    return ajax('contest/review', 'post', {
+      data
+    })
+  },
+
+  getContestReview (contestId) {
+    return ajax('contest/review', 'get', {
+      params: {
+        contest_id: contestId
+      }
+    })
+  },
+
+  getContestReviewList (contestId, offset = 0, limit = 20) {
+    return ajax('contest/reviews', 'get', {
+      params: {
+        contest_id: contestId,
+        offset,
+        limit
+      }
+    })
+  },
+  getContestReviewStats (contestId, isAdmin = false) {
+    const url = isAdmin ? 'admin/contest/review/stats' : 'contest/review/stats'
+    return ajax(url, 'get', {
+      params: {
+        contest_id: contestId
+      }
+    })
+  },
+  getContestReviewListAdmin (contestId, offset = 0, limit = 20, filters = {}) {
+    const params = {
+      contest_id: contestId,
+      offset,
+      limit,
+      ...filters
+    }
+    return ajax('admin/contest/reviews', 'get', {
+      params
+    })
+  },
+
+  getContestReviewStatsAdmin (contestId) {
+    return ajax('admin/contest/review/stats', 'get', {
+      params: {
+        contest_id: contestId
+      }
+    })
   }
 }
 

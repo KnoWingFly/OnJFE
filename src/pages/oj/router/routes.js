@@ -110,6 +110,23 @@ export default [
         name: 'acm-helper',
         path: 'helper',
         component: Contest.ACMContestHelper
+      },
+      {
+        name: 'contest-review',
+        path: 'review',
+        meta: { title: 'Contest Review' },
+        component: Contest.ContestReviewPage
+      },
+      // NEW: Add the admin review route
+      {
+        name: 'contest-review-admin',
+        path: 'review/admin',
+        meta: {
+          title: 'Contest Review Management',
+          requiresAuth: true,
+          requiresContestAdmin: true // You might need to implement this check
+        },
+        component: Contest.ContestReviewAdmin
       }
     ]
   },

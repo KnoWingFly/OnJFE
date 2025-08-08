@@ -4,4 +4,19 @@ const ContestProblemList = () => import(/* webpackChunkName: "contest" */ './chi
 const ContestRank = () => import(/* webpackChunkName: "contest" */ './children/ContestRank.vue')
 const ACMContestHelper = () => import(/* webpackChunkName: "contest" */ './children/ACMHelper.vue')
 
-export {ContestDetails, ContestList, ContestProblemList, ContestRank, ACMContestHelper}
+// 1. Re-add the import for the user review page
+const ContestReviewPage = () => import(/* webpackChunkName: "contest" */ './ContestReviewPage.vue')
+
+// 2. Keep the import for the admin review page
+const ContestReviewAdmin = () => import(/* webpackChunkName: "contest" */ './ContestReviewAdmin.vue')
+
+// 3. Export BOTH components
+export {
+  ContestDetails,
+  ContestList,
+  ContestProblemList,
+  ContestRank,
+  ACMContestHelper,
+  ContestReviewPage, // It was missing from here
+  ContestReviewAdmin
+}
